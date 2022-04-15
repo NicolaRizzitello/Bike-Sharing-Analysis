@@ -6,7 +6,7 @@ This one of my project that I did during Master's course for Statistics module. 
 ![alt text](https://user-images.githubusercontent.com/103247709/162481933-f4edc1f6-b68c-4113-a03c-15400b240f10.png)
 
 ## About Dataset
-The dataset was composed by 10866 rows and 14 variables initially. The data cleaning process has brought some changes so teh final dataset is composed by 10944 and 11 variables:
+The dataset was composed by 10866 rows and 14 variables initially. The data cleaning process has brought some changes so the final dataset is composed by 10944 and 11 variables:
 * **date_hour**: date and time of rent
 * **season**: season of the period (categorical)
 * **holiday**: working-days and no-working-days (categorical)
