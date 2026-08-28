@@ -1,611 +1,533 @@
-########################## PACCHETTI UTILIZZATI ##################################
+# ============================================================
+# BIKE SHARING ANALYSIS
+# Exploratory Data Analysis + Random Forest Regression
+# ============================================================
+
+# ----------------------------
+# 1. PACKAGES
+# ----------------------------
+required_packages <- c(
+  "tidyverse",
+  "lubridate",
+  "randomForest",
+  "corrplot",
+  "scales",
+  "mgcv"
+)
+
+missing_packages <- required_packages[!required_packages %in% rownames(installed.packages())]
+
+if (length(missing_packages) > 0) {
+  stop(
+    paste0(
+      "Missing packages: ", paste(missing_packages, collapse = ", "),
+      ". Install them before running the script."
+    )
+  )
+}
+
 library(tidyverse)
-library(randomForest)
 library(lubridate)
-library(ggcorrplot)
-library(ggrepel)
-library(ggtext)
-library(directlabels)
-library(wesanderson)
-library(remotes)
-library(ggdark)
-library(gridExtra)
-library(gridtext)
-library(grid)
-library(ggthemes)
-library(cowplot)
-library(scales)
+library(randomForest)
 library(corrplot)
-remotes::install_version("Rttf2pt1", version = "1.3.8")
-extrafont::font_import()
-extrafont::loadfonts(device = "win", quiet = TRUE)
+library(scales)
+library(mgcv)
 
-########################## CARICAMENTO DATASET ##################################
-
-dati <- read.csv2("9.csv",h=T, sep=',')
-str(dati)
-#################################################################################
-#################################################################################
-
-########################## PULIZIA DATASET ######################################
-dati <- separate(dati, datetime, c('date','hour'), sep = " ", 
-                 convert = FALSE, remove = FALSE ) ## SEPARO ORA E DATA
-
-date_seq <- seq(as.POSIXct("2011-01-01"), 
-                as.POSIXct("2012-12-31"), 
-                by=(60*60))
-df <- data.frame(Date = strftime(date_seq, format="%Y-%m-%d"),
-                 Time = strftime(date_seq, format="%H:%M:%S")) 
-df.n <- df %>%
-  mutate(day = day(Date))%>%
-  filter(day <= 19) ## CREAZIONE NUOVO DATASET CONTENENTE GIORNI E ORE DAL 2011 AL 2012
-
-data_def <- left_join(df.n,dati, by=c("Date"="date", "Time" = "hour")) ## UNISCO I DUE DATASET 
-
-data_def$count[is.na(data_def$count)] <- 0
-data_def$casual[is.na(data_def$casual)] <- 0
-data_def$registered[is.na(data_def$registered)] <- 0
-data_def.2 <- data_def%>%  
-  fill(season, holiday, workingday,weather, temp,atemp,humidity,windspeed) ## IMPLEMENTO I DATI MANCANTI PER TUTTE LE VARIABILI
-data_def.2 <- data_def.2 %>%
-  mutate(month = month(Date))%>%
-  mutate(year = year(Date))%>%
-  mutate(day = day(Date))
-data_def.2 <- separate(data_def.2, Time, c('hour',"minutes","seconds"), sep = ":", 
-                       convert = FALSE, remove = FALSE ) 
-
-data_def.2$hour <- as.integer(data_def.2$hour)
-data_def.2 <- data_def.2%>% 
-  mutate(date_hour = make_datetime(year,month,day,hour)) 
-data_def.2 <- data_def.2[,c(-1:-7,-18:-20)] ## RIMUOVO ALCUNE VARIABILI DAL DATASET
-
-data_def.2 <- data_def.2 %>% 
-  select(date_hour, season, holiday,workingday,weather,temp,
-         atemp, humidity, windspeed, casual, registered) 
-
-data_def.2$season <- ifelse(data_def.2$season %in% 1, "Inverno",
-                            ifelse(data_def.2$season %in% 2, "Primavera",
-                                   ifelse(data_def.2$season %in% 3, "Estate", "Autunno")))
-
-data_def.2$weather <- ifelse(data_def.2$weather %in% 1, "Buona",
-                             ifelse(data_def.2$weather %in% 2, "Normale",
-                                    ifelse(data_def.2$weather %in% 3, "Discreta", "Brutta")))
-
-data_def.2$holiday <- ifelse(data_def.2$holiday %in% 0, "Feriale", "Festivo")
-data_def.2$workingday <- ifelse(data_def.2$workingday %in% 0, "Fine_settimana", "Giorno_settimana") ## RINOMINO LE CATEGORIE DI ALCUNE VARIABILI
-
-str(data_def.2)
-data_def.2 <- data_def.2%>%
-  mutate_at(c(2:5), as.factor)%>%
-  mutate_at(c(6:9), as.numeric) ## CAMBIO NATURA ALLE VARIABILI
-#############################################################################################################################
-#############################################################################################################################
-
-################################ DISTRIBUZIONE DELLE VARIABILI CASUAL E REGISTERED ##########################################
-
-medie_anni <- data_def.2%>%
-  group_by(year(date_hour))%>%
-  summarise(media_reg = round(mean(registered),0), media_cas = round(mean(casual),0))## AFFITTI MEDI ANNUALI
-colnames(medie_anni)[1] <- "Anno"
-colnames(medie_anni)[2] <- "Media affitti per utenti registrati"
-colnames(medie_anni)[3] <- "Media affitti per utenti non registrati"
-DT::datatable(medie_anni)
-
-cas_reg <- data_def.2%>%
-  group_by(format(date_hour, format = "%Y %m"))%>%
-  summarise(reg = sum(registered), cas = sum(casual))
-colnames(cas_reg)[1] <- "YMD"
-
-plot_temp <- ggplot(cas_reg, aes(x=YMD, group = 1)) + 
-  geom_line(mapping = aes(y = reg, color = "Registrati"),size=1.5) + 
-  geom_line(mapping = aes(y = cas, color = "Non Registrati"),size=1.5)+
-  labs(title = "Distribuzione temporale degli affitti di bici", 
-  subtitle = "Utenti registrati e non")+
-  theme_bw() + 
-  ylab("FREQUENZE") + xlab("ANNI 2011/2012") + labs(color='UTENTI')+
-  scale_x_discrete(expand=c(0, 1.5)) +
-  scale_color_manual(values = c("Registrati" = "deepskyblue1", "Non Registrati" = "forestgreen")) +
-  theme(panel.grid.major = element_line(colour = "#d3d3d3"),
-        panel.grid.minor = element_blank(),
-        panel.border = element_blank(),
-        panel.background = element_blank(),
-        text=element_text(family = "Candara"),
-        title = element_text(size = 25,face="bold"),
-        plot.subtitle = element_text(size = 20,face="bold"),
-        axis.title = element_text(size = 20,face="bold", vjust = 2),
-        axis.text.x = element_text(size = 15,angle = 45,face="bold",colour="black", vjust =  1, hjust = 1),
-        axis.text.y = element_text(colour="black",size = 15,face="bold"),
-        axis.line = element_line(size=0.5, colour = "black"),
-        legend.position = c(0.85,0.55), legend.box = "horizontal",
-        legend.title=element_text(size = 20, face = "bold"), 
-        legend.text=element_text(size = 15, face = "bold"))## DISTRIBUZIONE TEMPORALE DEGLI AFFITTI
-#############################################################################################################################
-#############################################################################################################################
-
-############################################## ANALISI DESCRITTIVA ##########################################################
-data_c <- data_def.2 %>% 
-  group_by(season)%>%
-  summarise(sum_c = sum(casual))%>%
-  mutate(perc_c = (sum_c)/sum(sum_c))%>%
-  arrange(sum_c)
-
-data_r <- data_def.2 %>% 
-  group_by(season)%>%
-  summarise(sum_r = sum(registered))%>%
-  mutate(perc_r = (sum_r)/sum(sum_r))%>%
-  arrange(sum_r)
-
-
-plot_stag_reg <- ggplot(data = data_r, mapping = aes(x=reorder(season,sum_r), y = perc_r))+
-  geom_bar(width=0.5,stat = "identity",fill = "deepskyblue1", color = "forestgreen")+
-  geom_text(aes(label = percent(perc_r), y = perc_r, group = season),
-            position = position_dodge(width = 1), color = "black",
-            vjust = -0.5, hjust = 0.5,size = 6, fontface = "bold",family = "Candara") +
-  scale_y_continuous(labels=percent, limits = c(0,0.40))+
-  labs(
-    subtitle = "
-    Utenti registrati")+
-  theme(panel.grid.major = element_line(colour = "#d3d3d3"),
-        panel.grid.minor = element_blank(),
-        panel.border = element_blank(),
-        panel.background = element_blank(),
-        plot.subtitle = element_text(size = 20, family = "Candara", face = "bold"),
-        text=element_text(family = "Candara"),
-        axis.title = element_text(face="bold"),
-        axis.text.x = element_text(face = "bold",colour="black", angle = 45,size = 15, vjust = 1, hjust = 1),
-        axis.text.y = element_text(face = "bold",colour="black", size = 15),
-        axis.line = element_line(size=0.5, colour = "black"),
-        legend.position = "bottom") 
-
-plot_stag_cas <- ggplot(data = data_c, mapping = aes(x=reorder(season,sum_c), y = perc_c))+
-  geom_bar(width=0.5,stat = "identity",fill ="forestgreen", color = "darkslategray1")+
-  geom_text(aes(label = percent(perc_c), y = perc_c, group = season),
-            position = position_dodge(width = 1), color = "black",
-            vjust = -0.5, hjust = 0.5,size = 6, fontface = "bold",family = "Candara") +
-  scale_y_continuous(labels=percent, limits = c(0,0.40))+
-  labs(
-    subtitle = "
-    Utenti non registrati")+
-  theme(panel.grid.major = element_line(colour = "#d3d3d3"),
-        panel.grid.minor = element_blank(),
-        panel.border = element_blank(),
-        panel.background = element_blank(),
-        plot.subtitle = element_text(size = 20, family = "Candara", face = "bold"),
-        text=element_text(family = "Candara"),
-        axis.title = element_text(face="bold"),
-        axis.text.x = element_text(face = "bold",angle = 45,colour="black", size = 15, vjust = 1, hjust = 1),
-        axis.text.y = element_text(face = "bold",colour="black", size = 15),
-        axis.line = element_line(size=0.5, colour = "black"),
-        legend.position = "bottom") 
-
-p1 <- list(plot_stag_reg, plot_stag_cas) %>% map(~.x + labs(x=NULL, y=NULL))
-
-top1 <- textGrob("DISTRIBUZIONE DEGLI AFFITTI RISPETTO ALLA STAGIONE",
-                 gp=gpar(fontsize=30,fontfamily="Candara", col = "black",fontface = "bold",vjust = 0.5))
-
-yleft1 <- textGrob("PERCENTUALE AFFITTI",rot = 90,gp = gpar(fontsize = 20, fontface = "bold",
-                                                            fontfamily = "Candara", col = "black"))
-
-bottom1 <- textGrob("STAGIONE", gp = gpar(fontsize = 20,fontface = "bold",col = "black",
-                                          fontfamily = "Candara"))
-
-uni1 <- grid.arrange(grobs=p1, ncol = 2,top = top1, left = yleft1, bottom = bottom1) 
-
-g1 <- ggdraw(uni1) + 
-  theme(plot.background = element_rect(fill = "white", color = NA))## DISTRIBUZIONE VARIABILI RISPOSTA RISPETTO ALLA STAGIONE
-#############################################################################################################################
-#############################################################################################################################
-
-plot_hol_reg <- ggplot (data_def.2, aes(x=reorder(holiday,-registered) , y = registered))  + 
-  geom_boxplot (fill = "deepskyblue1", color = "blue")  + 
-  labs(
-    subtitle = "
-    Utenti registrati")+
-  theme(panel.grid.major = element_line(colour = "#d3d3d3"),
-        panel.grid.minor = element_blank(),
-        panel.border = element_blank(),
-        panel.background = element_blank(),
-        plot.subtitle = element_text(size = 20, family = "Candara", face = "bold"),
-        text=element_text(family = "Candara"),
-        axis.title = element_text(face="bold"),
-        axis.text.x = element_text(face = "bold",colour="black", angle = 45,size = 15, vjust = 1, hjust = 1),
-        axis.text.y = element_text(face = "bold",colour="black", size = 15),
-        axis.line = element_line(size=0.5, colour = "black"),
-        legend.position = "bottom")
-
-plot_hol_cas <- ggplot (data_def.2, aes(x=reorder(holiday,-casual) , y = casual))  + 
-  geom_boxplot (fill = "forestgreen", color = "blue")  + 
-  labs(
-    subtitle = "
-    Utenti non registrati")+
-  theme(panel.grid.major = element_line(colour = "#d3d3d3"),
-        panel.grid.minor = element_blank(),
-        panel.border = element_blank(),
-        panel.background = element_blank(),
-        plot.subtitle = element_text(size = 20, family = "Candara", face = "bold"),
-        text=element_text(family = "Candara"),
-        axis.title = element_text(face="bold"),
-        axis.text.x = element_text(face = "bold",colour="black", angle = 45,size = 15, vjust = 1, hjust = 1),
-        axis.text.y = element_text(face = "bold",colour="black", size = 15),
-        axis.line = element_line(size=0.5, colour = "black"),
-        legend.position = "bottom")
-
-p2 <- list(plot_hol_reg, plot_hol_cas) %>% map(~.x + labs(x=NULL, y=NULL))
-
-top2 <- textGrob("DISTRIBUZIONE DEGLI AFFITTI RISPETTO AL TIPO DI GIORNATA",
-                 gp=gpar(fontsize=30,fontfamily="Candara", col = "black",fontface = "bold",vjust = 0.5))
-
-yleft2 <- textGrob("AFFITTI",rot = 90,gp = gpar(fontsize = 20, fontface = "bold",
-                   fontfamily = "Candara", col = "black"))
-
-bottom2 <- textGrob("TIPO DI GIORNATA", gp = gpar(fontsize = 20,fontface = "bold",col = "black",
-                   fontfamily = "Candara"))
-
-uni2 <- grid.arrange(grobs=p2, ncol = 2, top = top2, left = yleft2, bottom = bottom2) 
-
-g2 <- ggdraw(uni2) + 
-  theme(plot.background = element_rect(fill = "white", color = NA))## DISTRIBUZIONE VARIABILI RISPOSTA RISPETTO AL TIPO DI GIORNATA
-###################################################################################################################################
-###################################################################################################################################
-
-plot_wet_reg <- ggplot (data_def.2, aes(x=reorder(weather,-registered) , y = registered))  + 
-  geom_boxplot (fill = "deepskyblue1", color = "blue")  + 
-  labs(subtitle = "Utenti registrati")+xlab("Situazione meteorologica") + ylab("Affitti")+
-  theme(panel.grid.major = element_line(colour = "#d3d3d3"),
-        panel.grid.minor = element_blank(),
-        panel.border = element_blank(),
-        panel.background = element_blank(),
-        plot.subtitle = element_text(size = 20, family = "Candara", face = "bold"),
-        text=element_text(family = "Candara"),
-        axis.title = element_text(face="bold"),
-        axis.text.x = element_text(face = "bold",colour="black", angle = 45,size = 15, vjust = 1, hjust = 1),
-        axis.text.y = element_text(face = "bold",colour="black", size = 15),
-        axis.line = element_line(size=0.5, colour = "black"),
-        legend.position = "bottom")
-
-plot_wet_cas <- ggplot (data_def.2, aes(x=reorder(weather,-casual) , y = casual))  + 
-  geom_boxplot (fill = "forestgreen", color = "blue")  + 
-  labs(subtitle = "Utenti non registrati")+xlab("Situazione meteorologica")+
-  theme(panel.grid.major = element_line(colour = "#d3d3d3"),
-        panel.grid.minor = element_blank(),
-        panel.border = element_blank(),
-        panel.background = element_blank(),
-        plot.subtitle = element_text(size = 20, family = "Candara", face = "bold"),
-        text=element_text(family = "Candara"),
-        axis.title = element_text(face="bold"),
-        axis.text.x = element_text(face = "bold",colour="black", angle = 45,size = 15, vjust = 1, hjust = 1),
-        axis.text.y = element_text(face = "bold",colour="black", size = 15),
-        axis.line = element_line(size=0.5, colour = "black"),
-        legend.position = "bottom")
-
-
-p3 <- list(plot_wet_reg, plot_wet_cas) %>% map(~.x + labs(x=NULL, y=NULL))
-
-top3 <- textGrob("AFFITTI E SITUAZIONE METEOROLOGICA",
-                 gp=gpar(fontsize=30,fontfamily="Candara", col = "black",fontface = "bold",vjust = 0.5))
-
-yleft3 <- textGrob("AFFITTI",rot = 90,gp = gpar(fontsize = 20, fontface = "bold",
-                    fontfamily = "Candara", col = "black"))
-
-bottom3 <- textGrob("SITUAZIONE METEOROLOGICA", gp = gpar(fontsize = 20,fontface = "bold",col = "black",
-                    fontfamily = "Candara"))
-
-uni3 <- grid.arrange(grobs=p3, ncol = 2,top = top3, left = yleft3, bottom = bottom3) 
-
-g3 <- ggdraw(uni3) + 
-  theme(plot.background = element_rect(fill = "white", color = NA))## DISTRIBUZIONE VARIABILI RISPOSTA RISPETTO ALLA SITUAZIONE METEOROLOGICA
-###################################################################################################################################
-###################################################################################################################################
-
-only_num <- data_def.2[, c(6:11)]
-c <- cor(only_num)
-corrplot(c, type="upper",addCoef.col = "black", tl.cex = 1,number.cex = 1)## CORRELAZIONE
-###################################################################################################################################
-###################################################################################################################################
-
-plot_um_reg <- ggplot(data = data_def.2,mapping = aes(x = humidity, y = registered))+
-  geom_point(shape = 1,color = "blue")+geom_smooth(size = 2,color = "deepskyblue1",
-                                                   method = "gam",formula = y ~ s(x, bs = "cs"))+
-  labs(
-    subtitle = "
-    Utenti registrati")+
-  theme(panel.grid.major = element_line(colour = "#d3d3d3"),
-        panel.grid.minor = element_blank(),
-        panel.border = element_blank(),
-        panel.background = element_blank(),
-        plot.subtitle = element_text(size = 20, family = "Candara", face = "bold"),
-        text=element_text(family = "Candara"),
-        axis.title = element_text(face="bold"),
-        axis.text.x = element_text(face = "bold",colour="black", size = 15, vjust = 1, hjust = 0.5),
-        axis.text.y = element_text(face = "bold",colour="black", size = 15),
-        axis.line = element_line(size=0.5, colour = "black"),
-        legend.position = "bottom")
-
-plot_um_cas <- ggplot(data = data_def.2,mapping = aes(x = humidity, y = casual))+
-  geom_point(shape = 1,color = "blue")+geom_smooth(size = 2,color = "forestgreen",
-                                                   method = "gam",formula = y ~ s(x, bs = "cs"))+
-  labs(
-    subtitle = "
-    Utenti non registrati")+
-  theme(panel.grid.major = element_line(colour = "#d3d3d3"),
-        panel.grid.minor = element_blank(),
-        panel.border = element_blank(),
-        panel.background = element_blank(),
-        plot.subtitle = element_text(size = 20, family = "Candara", face = "bold"),
-        text=element_text(family = "Candara"),
-        axis.title = element_text(face="bold"),
-        axis.text.x = element_text(face = "bold",colour="black", size = 15, vjust = 1, hjust = 0.5),
-        axis.text.y = element_text(face = "bold",colour="black", size = 15),
-        axis.line = element_line(size=0.5, colour = "black"),
-        legend.position = "bottom")
-
-p4 <- list(plot_um_reg, plot_um_cas) %>% map(~.x + labs(x=NULL, y=NULL))
-
-yleft4 <- textGrob("Affitti",rot = 90,gp = gpar(fontsize = 20, fontface = "bold",
-                    fontfamily = "Candara", col = "black"))
-
-top4 <- textGrob("DISTRIBUZIONE AFFITTI E TASSO DI UMIDITÀ",
-                 gp=gpar(fontsize=30,fontfamily="Candara", col = "black",fontface = "bold",vjust = 0.5))
-
-bottom4 <- textGrob("Umidità", gp = gpar(fontsize = 20,fontface = "bold",col = "black",
-                    fontfamily = "Candara"))
-
-uni4 <- grid.arrange(grobs=p4, ncol = 2, top = top4,left = yleft4, bottom = bottom4) 
-
-g4 <- ggdraw(uni4) + 
-  theme(plot.background = element_rect(fill = "white", color = NA))## DISTRIBUZIONE VARIABILI RISPOSTA RISPETTO AL TASSO DI UMIDITà
-###################################################################################################################################
-###################################################################################################################################
-
-plot_tem_reg <- ggplot(data = data_def.2,mapping = aes(x = temp, y = registered))+
-  geom_point(shape = 1,color = "blue")+geom_smooth(size = 2,color = "deepskyblue1",
-                                    method = "gam",formula = y ~ s(x, bs = "cs"))+
-  labs(
-    subtitle = "
-    Utenti registrati")+
-  theme(panel.grid.major = element_line(colour = "#d3d3d3"),
-        panel.grid.minor = element_blank(),
-        panel.border = element_blank(),
-        panel.background = element_blank(),
-        plot.subtitle = element_text(size = 20, family = "Candara", face = "bold"),
-        text=element_text(family = "Candara"),
-        axis.title = element_text(face="bold"),
-        axis.text.x = element_text(face = "bold",colour="black", size = 15, vjust = 1, hjust = 0.5),
-        axis.text.y = element_text(face = "bold",colour="black", size = 15),
-        axis.line = element_line(size=0.5, colour = "black"),
-        legend.position = "bottom")
-
-plot_tem_cas <- ggplot(data = data_def.2,mapping = aes(x = temp, y = casual))+
-  geom_point(shape = 1,color = "blue")+geom_smooth(size = 2,color = "forestgreen",
-                                     method = "gam",formula = y ~ s(x, bs = "cs"))+
-  labs(
-    subtitle = "
-    Utenti non registrati")+
-  theme(panel.grid.major = element_line(colour = "#d3d3d3"),
-        panel.grid.minor = element_blank(),
-        panel.border = element_blank(),
-        panel.background = element_blank(),
-        plot.subtitle = element_text(size = 20, family = "Candara", face = "bold"),
-        text=element_text(family = "Candara"),
-        axis.title = element_text(face="bold"),
-        axis.text.x = element_text(face = "bold",colour="black", size = 15, vjust = 1, hjust = 0.5),
-        axis.text.y = element_text(face = "bold",colour="black", size = 15),
-        axis.line = element_line(size=0.5, colour = "black"),
-        legend.position = "bottom")
-
-p5 <- list(plot_tem_reg, plot_tem_cas) %>% map(~.x + labs(x=NULL, y=NULL))
-
-yleft5 <- textGrob("AFFITTI",rot = 90,gp = gpar(fontsize = 20, fontface = "bold",
-                          fontfamily = "Candara", col = "black"))
-
-top5 <- textGrob("DISTRIBUZIONE AFFITTI E TEMPERATURA",
-                 gp=gpar(fontsize=30,fontfamily="Candara", col = "black",fontface = "bold",vjust = 0.5))
-
-bottom5 <- textGrob("TEMPERARTURA", gp = gpar(fontsize = 20,fontface = "bold",col = "black",
-                          fontfamily = "Candara"))
-
-uni5 <- grid.arrange(grobs=p5, ncol = 2,top = top5, left = yleft5, bottom = bottom5) 
-
-g5 <- ggdraw(uni5) + 
-  theme(plot.background = element_rect(fill = "white", color = NA))## DISTRIBUZIONE VARIABILI RISPOSTA RISPETTO ALLA TEMPERATURA
-###################################################################################################################################
-###################################################################################################################################
-
-##################################################### RANDOM FOREST REGISTERED ###############################################################
 set.seed(500)
 
-data_def.2.1 <- data_def.2%>%
-  mutate(hour = hour(date_hour))## CREAZIONE NUOVO DATASET
 
-data_def.2.1$hour <- as.integer(data_def.2.1$hour)
-data_def.2.reg<-data_def.2.1[,-c(10)]## DATASET CON VARIABILE RISPOSTA REGISTERED 
+# ----------------------------
+# 2. LOAD DATA
+# ----------------------------
+# The script first looks for data/9.csv and then for 9.csv
+candidate_paths <- c(file.path("data", "bike_sharing.csv"), "9.csv")
+DATA_PATH <- candidate_paths[file.exists(candidate_paths)][1]
 
-sampl_reg<- sample(nrow(data_def.2.reg), 0.75*nrow(data_def.2.reg), replace = FALSE)## CAMPIONE SENZA SOSTITUZIONE DEL 75% DELLE RIGHE DEL DATASET
+if (is.na(DATA_PATH)) {
+  stop(
+    "Dataset not found. Place '9.csv' either in the project root or inside a 'data/' folder."
+  )
+}
 
-trainset_reg <- data_def.2.reg[sampl_reg,]## TRAIN SET (75% OSSERVAZIONI)
-testset_reg <- data_def.2.reg[-sampl_reg,]## TEST SET  (25% OSSERVAZIONI)
+bike_raw <- read.csv(DATA_PATH, header = TRUE, sep = ",", stringsAsFactors = FALSE)
 
-xtest_reg<-testset_reg[,-10]## VARIABILI ESPLICATIVE NEL TEST SET 
-ytest_reg<-testset_reg[,10]## VARIABILE REGISTERED NEL TEST SET
-xtrain_reg<-trainset_reg[,-10]## VARIABILI ESPLICATIVE NEL TRAIN SET
-ytrain_reg<-trainset_reg[,10]## VARIABILE REGISTERED NEL TEST SET
-
-model4_reg<-randomForest(xtrain_reg,ytrain_reg,xtest_reg,ytest_reg,mtry=5,importance=TRUE)
-model7_reg<-randomForest(xtrain_reg,ytrain_reg,xtest_reg,ytest_reg,mtry=8,importance=TRUE)
-model9_reg<-randomForest(xtrain_reg,ytrain_reg,xtest_reg,ytest_reg,mtry=10,importance=TRUE)## CREAZIONE DI DIVERSI MODELLI CON VALORI DI MTRY DIVERSI
-
-oob.err_reg<-c(model4_reg$mse[500],model7_reg$mse[500],model9_reg$mse[500])## OUT OF BAG ERRORS ESTIMATES
-
-test.err_reg<-c(model4_reg$test$mse[500],
-                model7_reg$test$mse[500],model9_reg$test$mse[500])## MEAN SQUARED TEST ERROR
-###################################################################################################################################
-###################################################################################################################################
-
-##################################################### RANDOM FOREST CASUAL ###############################################################
-data_def.2.cas<-data_def.2.1[,-c(11)]## DATASET CON VARIABILE RISPOSTA CASUAL
-
-sampl_cas<- sample(nrow(data_def.2.cas), 0.75*nrow(data_def.2.cas), replace = FALSE)## CAMPIONE SENZA SOSTITUZIONE DEL 75% DELLE RIGHE DEL DATASET
-trainset_cas <- data_def.2.cas[sampl_cas,] #train set (75% osservazioni)
-testset_cas <- data_def.2.cas[-sampl_cas,] #test set  (25% osservazioni)
-
-xtest_cas<-testset_cas[,-10]## VARIABILI ESPLICATIVE NEL TEST SET 
-ytest_cas<-testset_cas[,10]## VARIABILE CASUAL NEL TEST SET 
-xtrain_cas<-trainset_cas[,-10]## VARIABILI ESPLICATIVE NEL TRAIN SET 
-ytrain_cas<-trainset_cas[,10]## VARIABILE CASUAL NEL TRAIN SET 
-
-model4_cas<-randomForest(xtrain_cas,ytrain_cas,xtest_cas,ytest_cas,mtry=5,importance=TRUE)
-model7_cas<-randomForest(xtrain_cas,ytrain_cas,xtest_cas,ytest_cas,mtry=8,importance=TRUE)
-model9_cas<-randomForest(xtrain_cas,ytrain_cas,xtest_cas,ytest_cas,mtry=10,importance=TRUE)## CREAZIONE DI DIVERSI MODELLI CON VALORI DI MTRY DIVERSI
-
-oob.err_cas<-c(model4_cas$mse[500],model7_cas$mse[500],model9_cas$mse[500])## OUT OF BAG ERRORS ESTIMATES 
-test.err_cas<-c(model4_cas$test$mse[500], model7_cas$test$mse[500],model9_cas$test$mse[500])## MEAN SQUARED TEST ERROR
-###################################################################################################################################
-###################################################################################################################################
-
-##################################################### CONFRONTO MSE MODELLI ################################################################
-mse.4c <- model4_cas$mse
-mse.7c <- model7_cas$mse
-mse.9c <- model9_cas$mse
-mseC <- data.frame(mse.4c,mse.7c,mse.9c)
-mseC$numeroAlberi <- rep(1:500)## CREAZIONE DATASET CON I VALORI DI MSE
-
-msepC <- ggplot(mseC, aes(x=numeroAlberi, group = 1)) + 
-  geom_line(mapping = aes(y = mse.4c, color = "5"),size=1.5) + 
-  geom_line(mapping = aes(y = mse.7c, color = "8"),size=1.5)+
-  geom_line(mapping = aes(y = mse.9c, color = "10"),size=1.5)+
-  labs(subtitle = "Modelli con variabile risposta casual")+
-  ylab("MSE") + xlab("Numero di alberi") + labs(color='Mtry')+
-  scale_color_manual(values = c("5" = "gold1", "8" = "green4", "10" = "blue2")) +
-  theme(panel.grid.major = element_line(colour = "#d3d3d3"),
-        panel.grid.minor = element_blank(),
-        panel.border = element_blank(),
-        panel.background = element_blank(),
-        text=element_text(family = "Candara"),
-        plot.subtitle = element_text(size = 20, family = "Candara", face = "bold"),
-        axis.title = element_text(size = 15,face="bold", vjust = 2),
-        axis.text.x = element_text(size = 15,face="bold",colour="black", vjust =  1, hjust = 1),
-        axis.text.y = element_text(colour="black",size = 15,face="bold"),
-        axis.line = element_line(size=0.5, colour = "black"),
-        legend.position = "right",
-        legend.title=element_text(size = 20, face = "bold"), 
-        legend.text=element_text(size = 15, face = "bold"))## GRAFICO DEI VALORI DI MSE DEI MODELLI
-
-mse.4r <- model4_reg$mse
-mse.7r <- model7_reg$mse
-mse.9r <- model9_reg$mse
-mseR <- data.frame(mse.4r,mse.7r,mse.9r)
-mseR$numeroAlberi <- rep(1:500)
+cat("Original dataset dimensions:", nrow(bike_raw), "rows x", ncol(bike_raw), "columns\n")
+str(bike_raw)
 
 
-msepR <- ggplot(mseR, aes(x=numeroAlberi, group = 1)) + 
-  geom_line(mapping = aes(y = mse.4r, color = "5"),size=1.5) + 
-  geom_line(mapping = aes(y = mse.7r, color = "8"),size=1.5)+
-  geom_line(mapping = aes(y = mse.9r, color = "10"),size=1.5)+
-  labs(subtitle = "Modelli con variabile risposta registered")+
-  ylab("MSE") + xlab("Numero di alberi") + labs(color='Mtry')+
-  scale_color_manual(values = c("5" = "gold1", "8" = "green4", "10" = "blue2")) +
-  theme(panel.grid.major = element_line(colour = "#d3d3d3"),
-        panel.grid.minor = element_blank(),
-        panel.border = element_blank(),
-        panel.background = element_blank(),
-        text=element_text(family = "Candara"),
-        plot.subtitle = element_text(size = 20, family = "Candara", face = "bold"),
-        axis.title = element_text(size = 15,face="bold", vjust = 2),
-        axis.text.x = element_text(size = 15,face="bold",colour="black", vjust =  1, hjust = 1),
-        axis.text.y = element_text(colour="black",size = 15,face="bold"),
-        axis.line = element_line(size=0.5, colour = "black"),
-        legend.position = "none",
-        legend.title=element_text(size = 20, face = "bold"), 
-        legend.text=element_text(size = 15, face = "bold"))## GRAFICO DEI VALORI DI MSE DEI MODELLI
+# ----------------------------
+# 3. DATA CLEANING
+# ----------------------------
+# Split datetime into date and hour while keeping the original field.
+bike <- bike_raw %>%
+  separate(
+    datetime,
+    into = c("date", "time"),
+    sep = " ",
+    remove = FALSE
+  )
+
+# Build the complete hourly sequence for the first 19 days of each month,
+# matching the structure of the original Bike Sharing dataset.
+full_time_grid <- tibble(
+  date_hour = seq(
+    from = as.POSIXct("2011-01-01 00:00:00", tz = "UTC"),
+    to   = as.POSIXct("2012-12-31 23:00:00", tz = "UTC"),
+    by   = "hour"
+  )
+) %>%
+  filter(day(date_hour) <= 19) %>%
+  mutate(
+    date = format(date_hour, "%Y-%m-%d"),
+    time = format(date_hour, "%H:%M:%S")
+  )
+
+# Join the original observations to the complete hourly grid.
+bike_clean <- full_time_grid %>%
+  left_join(bike, by = c("date", "time"))
+
+# Missing rental counts correspond to hours not present in the original file.
+bike_clean <- bike_clean %>%
+  mutate(
+    count = replace_na(count, 0),
+    casual = replace_na(casual, 0),
+    registered = replace_na(registered, 0)
+  )
+
+# Fill explanatory variables for newly created timestamps.
+# Down/up filling avoids leaving missing values at the beginning/end of the series.
+bike_clean <- bike_clean %>%
+  fill(
+    season,
+    holiday,
+    workingday,
+    weather,
+    temp,
+    atemp,
+    humidity,
+    windspeed,
+    .direction = "downup"
+  )
+
+# Create useful calendar features.
+bike_clean <- bike_clean %>%
+  mutate(
+    year = year(date_hour),
+    month = month(date_hour),
+    hour = hour(date_hour),
+    season = factor(
+      season,
+      levels = c(1, 2, 3, 4),
+      labels = c("Winter", "Spring", "Summer", "Autumn")
+    ),
+    weather = factor(
+      weather,
+      levels = c(1, 2, 3, 4),
+      labels = c("Good", "Normal", "Poor", "Bad")
+    ),
+    holiday = factor(
+      holiday,
+      levels = c(0, 1),
+      labels = c("Not holiday", "Holiday")
+    ),
+    workingday = factor(
+      workingday,
+      levels = c(0, 1),
+      labels = c("Non-working day", "Working day")
+    ),
+    across(c(temp, atemp, humidity, windspeed, casual, registered), as.numeric)
+  ) %>%
+  select(
+    date_hour,
+    year,
+    month,
+    hour,
+    season,
+    holiday,
+    workingday,
+    weather,
+    temp,
+    atemp,
+    humidity,
+    windspeed,
+    casual,
+    registered
+  )
+
+cat("Clean dataset dimensions:", nrow(bike_clean), "rows x", ncol(bike_clean), "columns\n")
+summary(bike_clean)
 
 
+# ----------------------------
+# 4. EXPLORATORY DATA ANALYSIS
+# ----------------------------
 
-p6 <- list(msepR, msepC) %>% map(~.x + labs(x=NULL, y=NULL))
+# Average hourly rentals by year.
+yearly_means <- bike_clean %>%
+  group_by(year) %>%
+  summarise(
+    mean_registered = mean(registered, na.rm = TRUE),
+    mean_casual = mean(casual, na.rm = TRUE),
+    .groups = "drop"
+  )
 
-yleft6 <- textGrob("MSE",rot = 90,gp = gpar(fontsize = 15, fontface = "bold",
-                                            fontfamily = "Candara", col = "black"))
+print(yearly_means)
 
-top6 <- textGrob("CONFRONTO DEI VALORI DI MSE DEI MODELLI",
-                 gp=gpar(fontsize=30,fontfamily="Candara", col = "black",fontface = "bold",vjust = 0.5))
+# Monthly rental trends.
+monthly_rentals <- bike_clean %>%
+  mutate(month_date = floor_date(date_hour, unit = "month")) %>%
+  group_by(month_date) %>%
+  summarise(
+    registered = sum(registered, na.rm = TRUE),
+    casual = sum(casual, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_longer(
+    cols = c(registered, casual),
+    names_to = "user_type",
+    values_to = "rentals"
+  )
 
-bottom6 <- textGrob("Numero di alberi", gp = gpar(fontsize = 15,fontface = "bold",col = "black",
-                                                  fontfamily = "Candara"))
+plot_monthly <- ggplot(
+  monthly_rentals,
+  aes(x = month_date, y = rentals, group = user_type, linetype = user_type)
+) +
+  geom_line(linewidth = 1) +
+  labs(
+    title = "Monthly Bike Rentals",
+    subtitle = "Registered vs casual users",
+    x = NULL,
+    y = "Number of rentals",
+    linetype = "User type"
+  ) +
+  theme_minimal()
 
-uni6 <- grid.arrange(grobs=p6, ncol = 2, top = top6,left = yleft6, bottom = bottom6) 
-###################################################################################################################################
-###################################################################################################################################
+print(plot_monthly)
 
-##################################################### VARIABILI PIù IMPORTANTI ################################################################
-impR <- importance(model7_reg)
-impR <- as.data.frame(impR)
-impR$varnames <- rownames(impR) # row names to column
-rownames(impR) <- NULL  
-colnames(impR)[1] <- "IncMse"
+# Rental share by season.
+season_distribution <- bike_clean %>%
+  group_by(season) %>%
+  summarise(
+    registered = sum(registered, na.rm = TRUE),
+    casual = sum(casual, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_longer(
+    cols = c(registered, casual),
+    names_to = "user_type",
+    values_to = "rentals"
+  ) %>%
+  group_by(user_type) %>%
+  mutate(share = rentals / sum(rentals)) %>%
+  ungroup()
 
-plot_imp_reg <- ggplot(impR, aes(x=reorder(varnames, IncMse), y = IncMse)) + 
-  geom_point(color = "deepskyblue1", size = 2) +
-  geom_segment(aes(x=varnames,xend=varnames,y=0,yend=IncMse), color = "deepskyblue1", size = 1) +
-  labs(subtitle = "Utenti registrati")+
-  ylab("%IncMse") + scale_y_continuous(limits = c(0,620))+
-  xlab("Variable Name") +
-  theme(panel.grid.major = element_line(colour = "#d3d3d3"),
-        panel.grid.minor = element_blank(),
-        panel.border = element_blank(),
-        panel.background = element_blank(),
-        plot.subtitle = element_text(size = 20, family = "Candara", face = "bold"),
-        text=element_text(family = "Candara"),
-        axis.title = element_text(face="bold"),
-        axis.text.x = element_text(face = "bold",colour="black", size = 15, vjust = 1, hjust = 0.5),
-        axis.text.y = element_text(face = "bold",colour="black", size = 15),
-        axis.line = element_line(size=0.5, colour = "black"),
-        legend.position = "bottom") +
-  coord_flip()
+plot_season <- ggplot(
+  season_distribution,
+  aes(x = season, y = share, fill = user_type)
+) +
+  geom_col(position = "dodge") +
+  scale_y_continuous(labels = percent) +
+  labs(
+    title = "Rental Distribution by Season",
+    x = "Season",
+    y = "Share of rentals",
+    fill = "User type"
+  ) +
+  theme_minimal()
 
-impC <- importance(model4_cas)
-impC <- as.data.frame(impC)
-impC$varnames <- rownames(impC) # row names to column
-rownames(impC) <- NULL  
-colnames(impC)[1] <- "IncMse"
+print(plot_season)
+
+# Working-day / holiday comparison.
+plot_day_type <- bike_clean %>%
+  select(holiday, registered, casual) %>%
+  pivot_longer(
+    cols = c(registered, casual),
+    names_to = "user_type",
+    values_to = "rentals"
+  ) %>%
+  ggplot(aes(x = holiday, y = rentals, fill = user_type)) +
+  geom_boxplot(outlier.alpha = 0.15) +
+  labs(
+    title = "Bike Rentals by Day Type",
+    x = NULL,
+    y = "Hourly rentals",
+    fill = "User type"
+  ) +
+  theme_minimal()
+
+print(plot_day_type)
+
+# Weather comparison.
+plot_weather <- bike_clean %>%
+  select(weather, registered, casual) %>%
+  pivot_longer(
+    cols = c(registered, casual),
+    names_to = "user_type",
+    values_to = "rentals"
+  ) %>%
+  ggplot(aes(x = weather, y = rentals, fill = user_type)) +
+  geom_boxplot(outlier.alpha = 0.15) +
+  labs(
+    title = "Bike Rentals by Weather Condition",
+    x = "Weather",
+    y = "Hourly rentals",
+    fill = "User type"
+  ) +
+  theme_minimal()
+
+print(plot_weather)
+
+# Temperature and humidity relationships.
+plot_temperature <- bike_clean %>%
+  select(temp, registered, casual) %>%
+  pivot_longer(
+    cols = c(registered, casual),
+    names_to = "user_type",
+    values_to = "rentals"
+  ) %>%
+  ggplot(aes(x = temp, y = rentals)) +
+  geom_point(alpha = 0.15) +
+  geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), se = FALSE) +
+  facet_wrap(~ user_type, scales = "free_y") +
+  labs(
+    title = "Bike Rentals and Temperature",
+    x = "Temperature",
+    y = "Hourly rentals"
+  ) +
+  theme_minimal()
+
+print(plot_temperature)
+
+plot_humidity <- bike_clean %>%
+  select(humidity, registered, casual) %>%
+  pivot_longer(
+    cols = c(registered, casual),
+    names_to = "user_type",
+    values_to = "rentals"
+  ) %>%
+  ggplot(aes(x = humidity, y = rentals)) +
+  geom_point(alpha = 0.15) +
+  geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs"), se = FALSE) +
+  facet_wrap(~ user_type, scales = "free_y") +
+  labs(
+    title = "Bike Rentals and Humidity",
+    x = "Humidity",
+    y = "Hourly rentals"
+  ) +
+  theme_minimal()
+
+print(plot_humidity)
+
+# Correlation matrix for numerical variables.
+numeric_data <- bike_clean %>%
+  select(year, month, hour, temp, atemp, humidity, windspeed, casual, registered)
+
+correlation_matrix <- cor(numeric_data, use = "complete.obs")
+
+corrplot(
+  correlation_matrix,
+  type = "upper",
+  method = "color",
+  addCoef.col = "black",
+  tl.cex = 0.8,
+  number.cex = 0.7
+)
 
 
-plot_imp_cas <- ggplot(impC, aes(x=reorder(varnames, IncMse), y = IncMse)) + 
-  geom_point(color = "forestgreen", size = 2) +
-  geom_segment(aes(x=varnames,xend=varnames,y=0,yend=IncMse), color = "forestgreen", size = 1) +
-  labs(subtitle = "Utenti non registrati")+
-  ylab("%IncMse") +
-  xlab("Variable Name") +
-  theme(panel.grid.major = element_line(colour = "#d3d3d3"),
-        panel.grid.minor = element_blank(),
-        panel.border = element_blank(),
-        panel.background = element_blank(),
-        plot.subtitle = element_text(size = 20, family = "Candara", face = "bold"),
-        text=element_text(family = "Candara"),
-        axis.title = element_text(face="bold"),
-        axis.text.x = element_text(face = "bold",colour="black", size = 15, vjust = 1, hjust = 0.5),
-        axis.text.y = element_text(face = "bold",colour="black", size = 15),
-        axis.line = element_line(size=0.5, colour = "black"),
-        legend.position = "bottom") +
-  coord_flip()
+# ----------------------------
+# 5. TRAIN / TEST SPLIT
+# ----------------------------
+# Use one split for both targets so model comparisons are based on the same rows.
+train_index <- sample(
+  seq_len(nrow(bike_clean)),
+  size = floor(0.75 * nrow(bike_clean)),
+  replace = FALSE
+)
+
+train_data <- bike_clean[train_index, ]
+test_data <- bike_clean[-train_index, ]
+
+cat("Training observations:", nrow(train_data), "\n")
+cat("Test observations:", nrow(test_data), "\n")
 
 
-p7 <- list(plot_imp_reg, plot_imp_cas) %>% map(~.x + labs(x=NULL, y=NULL))
+# ----------------------------
+# 6. RANDOM FOREST MODELLING
+# ----------------------------
+# date_hour is excluded because year/month/hour already represent temporal information.
+# The other response variable is also excluded to avoid target leakage.
 
-yleft7 <- textGrob("Nome Variabili",rot = 90,gp = gpar(fontsize = 20, fontface = "bold",
-                                                       fontfamily = "Candara", col = "black"))
+mtry_values <- c(5, 8, 10)
 
-bottom7 <- textGrob("%IncMse", gp = gpar(fontsize = 20,fontface = "bold",col = "black",
-                                        fontfamily = "Candara"))
+fit_random_forest_models <- function(target, train_df, test_df, mtry_grid) {
+  opposite_target <- ifelse(target == "registered", "casual", "registered")
+  
+  model_train <- train_df %>%
+    select(-date_hour, -all_of(opposite_target))
+  
+  model_test <- test_df %>%
+    select(-date_hour, -all_of(opposite_target))
+  
+  formula_rf <- as.formula(paste(target, "~ ."))
+  
+  models <- lapply(mtry_grid, function(mtry_value) {
+    randomForest(
+      formula = formula_rf,
+      data = model_train,
+      ntree = 500,
+      mtry = mtry_value,
+      importance = TRUE
+    )
+  })
+  
+  names(models) <- paste0("mtry_", mtry_grid)
+  
+  performance <- map2_dfr(models, mtry_grid, function(model, mtry_value) {
+    predictions <- predict(model, newdata = model_test)
+    
+    tibble(
+      mtry = mtry_value,
+      oob_mse = tail(model$mse, 1),
+      test_mse = mean((model_test[[target]] - predictions)^2)
+    )
+  })
+  
+  # Select the model using OOB MSE only; the test set remains an independent check.
+  best_mtry <- performance$mtry[which.min(performance$oob_mse)]
+  best_model <- models[[paste0("mtry_", best_mtry)]]
+  
+  list(
+    models = models,
+    performance = performance,
+    best_mtry = best_mtry,
+    best_model = best_model,
+    test_data = model_test
+  )
+}
 
-top7 <- textGrob("Variabili esplicative più importanti nei modelli scelti",
-                 gp=gpar(fontsize=30,fontfamily="Candara", col = "black",fontface = "bold",vjust = 0.5))
+registered_rf <- fit_random_forest_models(
+  target = "registered",
+  train_df = train_data,
+  test_df = test_data,
+  mtry_grid = mtry_values
+)
 
-uni7 <- grid.arrange(grobs=p7, ncol = 2, top = top7, left = yleft7, bottom = bottom7) 
+casual_rf <- fit_random_forest_models(
+  target = "casual",
+  train_df = train_data,
+  test_df = test_data,
+  mtry_grid = mtry_values
+)
 
-g7 <- ggdraw(uni7) + 
-  theme(plot.background = element_rect(fill = "white", color = NA))
-###################################################################################################################################
-###################################################################################################################################
+cat("\nRegistered-user models:\n")
+print(registered_rf$performance)
+cat("Selected mtry based on OOB MSE:", registered_rf$best_mtry, "\n")
+
+cat("\nCasual-user models:\n")
+print(casual_rf$performance)
+cat("Selected mtry based on OOB MSE:", casual_rf$best_mtry, "\n")
 
 
+# ----------------------------
+# 7. MSE EVOLUTION
+# ----------------------------
+extract_mse_history <- function(model_list, target_name) {
+  imap_dfr(model_list, function(model, model_name) {
+    tibble(
+      trees = seq_along(model$mse),
+      mse = model$mse,
+      mtry = sub("mtry_", "", model_name),
+      target = target_name
+    )
+  })
+}
 
- 
+mse_history <- bind_rows(
+  extract_mse_history(registered_rf$models, "Registered"),
+  extract_mse_history(casual_rf$models, "Casual")
+)
+
+plot_mse <- ggplot(
+  mse_history,
+  aes(x = trees, y = mse, linetype = mtry)
+) +
+  geom_line() +
+  facet_wrap(~ target, scales = "free_y") +
+  labs(
+    title = "Out-of-Bag MSE Across Trees",
+    x = "Number of trees",
+    y = "OOB MSE",
+    linetype = "mtry"
+  ) +
+  theme_minimal()
+
+print(plot_mse)
+
+
+# ----------------------------
+# 8. VARIABLE IMPORTANCE
+# ----------------------------
+extract_importance <- function(model, target_name) {
+  importance_df <- importance(model, type = 1) %>%
+    as.data.frame()
+  
+  tibble(
+    variable = rownames(importance_df),
+    importance = importance_df[[1]],
+    target = target_name
+  ) %>%
+    arrange(desc(importance))
+}
+
+importance_registered <- extract_importance(
+  registered_rf$best_model,
+  "Registered"
+)
+
+importance_casual <- extract_importance(
+  casual_rf$best_model,
+  "Casual"
+)
+
+importance_all <- bind_rows(
+  importance_registered,
+  importance_casual
+)
+
+print(importance_registered)
+print(importance_casual)
+
+plot_importance <- ggplot(
+  importance_all,
+  aes(x = reorder(variable, importance), y = importance)
+) +
+  geom_col() +
+  coord_flip() +
+  facet_wrap(~ target, scales = "free") +
+  labs(
+    title = "Random Forest Variable Importance",
+    x = NULL,
+    y = "% Increase in MSE"
+  ) +
+  theme_minimal()
+
+print(plot_importance)
+
+
+# ----------------------------
+# 9. FINAL MODEL SUMMARY
+# ----------------------------
+model_summary <- bind_rows(
+  registered_rf$performance %>%
+    mutate(target = "Registered"),
+  casual_rf$performance %>%
+    mutate(target = "Casual")
+) %>%
+  select(target, mtry, oob_mse, test_mse) %>%
+  arrange(target, oob_mse)
+
+cat("\nModel comparison:\n")
+print(model_summary)
+
+cat("\nBest registered-user model: mtry =", registered_rf$best_mtry, "\n")
+cat("Best casual-user model: mtry =", casual_rf$best_mtry, "\n")
